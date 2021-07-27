@@ -1,28 +1,24 @@
 #---------------------------------------------------------------
 ### HR Analytics - Predict Employee Churn in R ###
-#   Author: Hannah Roos, 23.06.2021
+#   Author: Hannah Roos, 23.06.2021, 27.07.2021
 #---------------------------------------------------------------
 
-
-rm(list = ls())
-
-setwd("C:/Users/hanna/Dropbox/Methods_2019_2021/R-Scripts/Analysis")
+# use here package to set up the right paths while making it less hard-wired for other users
+library(here)
 current_date <- Sys.Date()
-path_plot <- ("C:/Users/hanna/Dropbox/Medium")
+path_dat <- here('HR analytics','WA_Fn-UseC_-HR-Employee-Attrition.csv')
+path_plot <- here('Plots')
 
-
+# get data
 library(data.table)
-library(skimr)
-
-
-#https://www.kaggle.com/pavansubhasht/ibm-hr-analytics-attrition-dataset
-ibm_dat <- fread('WA_Fn-UseC_-HR-Employee-Attrition.csv')
+ibm_dat <- fread(path_dat)
 
 # explore data
+library(skimr)
 str(ibm_dat)
 skim(ibm_dat)
 
-
+# wrangle data
 ibm_dat[ , `:=`(median_compensation = median(MonthlyIncome)),by = .(JobLevel) ]
 ibm_dat[ , `:=`(CompensationRatio = (MonthlyIncome/median_compensation)), by =. (JobLevel)]
 ibm_dat[ , `:=`(CompensationLevel = factor(fcase(
@@ -184,6 +180,7 @@ correlationMatrix[,highlyCorrelated]
 colnames(ibm_nums)
 highlyCorrelated <- c(1,7,11,16,17,19)
 ibm_nums <- ibm_nums[,-highlyCorrelated]
+
 #----------------------------------------------------------
 # CREATE DUMMY VARIABLES
 #----------------------------------------------------------
@@ -201,6 +198,7 @@ View(ibm_sample)
 
 #--------------------------------------------------------------------------------
 # REMOVE NON INFORMATIVE PREDICTORS
+#--------------------------------------------------------------------------------
 
 
 # remove near zero variables (except for attr)
@@ -356,76 +354,3 @@ emp_indices <- emp_risk$index
 top_5 <- head(emp_active[emp_indices,],5)
 View(top_5)
 
-
-#---------------------------------------------------------------------------------------------------------
-# BACKUP
-#---------------------------------------------------------------------------------------------------------
-
-
-#----------------------------------------------------------
-# TRAIN - TEST - SPLIT
-#----------------------------------------------------------
-
-
-trainIndex <- createDataPartition(ibm_sample$Attrition, p = .6, list = F)
-train <- ibm_sample[ trainIndex,]
-valid <- ibm_sample[-trainIndex,]
-
-
-
-# Compare class distribution between training and validation set
-setDT(train)[, list(count = .N, rate = (.N/nrow(train))), by = Attrition]
-setDT(valid)[, list(count = .N, rate = (.N/nrow(train))), by = Attrition]
-
-
-
-
-# prepare training scheme
-control <- trainControl(method="repeatedcv", number=10, repeats=3)
-# train the model
-model <- train(diabetes~., data=PimaIndiansDiabetes, method="lvq", preProcess="scale", trControl=control)
-# estimate variable importance
-importance <- varImp(model, scale=FALSE)
-# summarize importance
-print(importance)
-# plot importance
-plot(importance)
-
-roc_imp <- filterVarImp(x = train[, -ncol(train)], y = train$Turnover)
-roc_imp
-
-
-
-# define the control using a random forest selection function
-control <- rfeControl(functions=rfFuncs, method="cv", number=10)
-# run the RFE algorithm
-results <- rfe(ibm_126_reduced_2[,1:21], as.matrix(ibm_126_reduced_2[,22]), rfeControl=control)
-# summarize the results
-print(results)
-# list the chosen features
-predictors(results)
-# plot the results
-plot(results, type=c("g", "o"))
-
-
-
-# estimate variable importance - glmnet
-importance <- varImp(model_glmnet, scale=FALSE)
-# summarize importance
-print(importance_glmnet)
-# plot importance
-plot(importance_glmnet)
-
-# estimate variable importance - random forest
-importance <- varImp(model_rf, scale=FALSE)
-# summarize importance
-print(importance_rf)
-# plot importance
-plot(importance_rf)
-
-# estimate variable importance - xgboost
-importance_xgboost <- varImp(model_xgboost, scale=FALSE)
-# summarize importance
-print(importance_xgboost)
-# plot importance
-plot(importance_xgboost)
