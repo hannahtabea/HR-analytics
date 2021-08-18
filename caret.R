@@ -18,6 +18,8 @@ library(skimr)
 str(ibm_dat)
 skim(ibm_dat)
 
+# speed up processing if possible
+plan(multicore) 
 
 #-------------------------------------------------------------------------------
 # DATA WRANGLING
@@ -40,19 +42,15 @@ turnover_rate
 
 # sample small to medium-sized data
 set.seed(123)
-ibm_126 <- ibm_dat[sample(.N, 126)]
+ibm_147 <- ibm_dat[sample(.N, 147)]
 
-
-#-------------------------------------------------------------------------------
-# VERY BASIC FEATURE PREPROCESSING
-#-------------------------------------------------------------------------------
 
 # look at data to find variables that probably do not have any predictive power
-colnames(ibm_126)
+colnames(ibm_147)
 
 
 # clean up data
-ibm_reduced <- ibm_126[,-c("DailyRate","EducationField", "EmployeeCount", "EmployeeNumber",
+ibm_reduced <- ibm_147[,-c("DailyRate","EducationField", "EmployeeCount", "EmployeeNumber",
                            "MonthlyRate","StandardHours","TotalWorkingYears","StockOptionLevel",
                            "Gender", "Over18", "OverTime", "median_compensation")]
 
@@ -63,17 +61,21 @@ ibm_reduced$Attrition <- factor(ibm_reduced$Attrition, levels = c("Yes", "No"))
 # double check
 levels(ibm_reduced$Attrition)
 
+# deal with class imbalance
+library(ROSE)
+set.seed(9560)
+ibm_balanced <- ROSE(Attrition ~ ., data  = ibm_reduced)$data
+# check if it worked
+table(ibm_balanced$Attrition) 
+
 #-------------------------------------------------------------------------------
 # MODELLING PART 
 #-------------------------------------------------------------------------------
 
 library(caret)
-library(naivebayes)
-library(ranger)
-
 
 # create data folds for cross validation
-myFolds <- createFolds(ibm_reduced$Attrition, k = 5)
+# myFolds <- createFolds(ibm_reduced$Attrition, k = 5)
 
 f1 <- function (data, lev = NULL, model = NULL) {
   precision <- posPredValue(data$pred, data$obs, positive = "Yes")
@@ -92,18 +94,20 @@ myControl <- trainControl(
   classProbs = TRUE, # IMPORTANT!
   verboseIter = TRUE,
   savePredictions = "final",
-  # remove vars those intercorrelations exceed 0.75
+  returnResamp = "final",
   preProcOptions = list(cutoff = 0.75),
-  index = myFolds
+  index = train_cv_caret$index,
+  indexOut = train_cv_caret$indexOut
 )
 
+
 # Create reusable train function
-methods <- c("glm","glmnet","naive_bayes", "ranger", "xgbTree")
+methods <- c("glmnet", "xgbTree")
 
 train_model <- function(x) {
   model <- caret::train(
                     Attrition ~ .,
-                    data = ibm_reduced,
+                    data = ibm_balanced,
                     metric = "F1",
                     method = x,
                     preProcess = c("scale", "nzv","corr"),
@@ -112,6 +116,7 @@ train_model <- function(x) {
   return(assign(paste0("model_", x),model, envir = .GlobalEnv))
 }
 
+
 lapply(methods, train_model)
 
 #-------------------------------------------------------------------------------
@@ -119,8 +124,7 @@ lapply(methods, train_model)
 #-------------------------------------------------------------------------------
 
 # Create model_list
-model_list <- list(baseline = model_glm, naive_bayes = model_naive_bayes,  
-                   glmnet = model_glmnet,random_forest = model_ranger, xgboost = model_xgbTree)
+model_list <- list(baseline = model_glmnet, xgboost = model_xgbTree)
 
 # Pass model_list to resamples(): resamples
 resamples <- resamples(model_list)
@@ -152,7 +156,7 @@ confusionMatrix(xgb_Pred, ibm_reduced$Attrition, mode = "prec_recall")
 #-------------------------------------------------------------------------------
 
 # save employee index to keep track
-ibm_reduced$ID <- ibm_126$EmployeeNumber
+ibm_reduced$ID <- ibm_147$EmployeeNumber
 # save employees who did not churn
 no_churn <- subset(ibm_reduced,Attrition == "No")
 # get class probabilities from employees who are still active
