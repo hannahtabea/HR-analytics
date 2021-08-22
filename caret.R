@@ -61,12 +61,12 @@ ibm_reduced$Attrition <- factor(ibm_reduced$Attrition, levels = c("Yes", "No"))
 # double check
 levels(ibm_reduced$Attrition)
 
-# deal with class imbalance
-library(ROSE)
-set.seed(9560)
-ibm_balanced <- ROSE(Attrition ~ ., data  = ibm_reduced)$data
-# check if it worked
-table(ibm_balanced$Attrition) 
+## deal with class imbalance (optional)
+# library(ROSE)
+# set.seed(9560)
+# ibm_balanced <- ROSE(Attrition ~ ., data  = ibm_reduced)$data
+# # check if it worked
+# table(ibm_balanced$Attrition) 
 
 #-------------------------------------------------------------------------------
 # MODELLING PART 
@@ -75,7 +75,12 @@ table(ibm_balanced$Attrition)
 library(caret)
 
 # create data folds for cross validation
-# myFolds <- createFolds(ibm_reduced$Attrition, k = 5)
+trainIndex <- createDataPartition(ibm_reduced$Attrition, p = .8,
+                                  list = FALSE,
+                                  times = 1)
+train <- ibm_reduced[ trainIndex,]
+test  <- ibm_reduced[-trainIndex,]
+
 
 f1 <- function (data, lev = NULL, model = NULL) {
   precision <- posPredValue(data$pred, data$obs, positive = "Yes")
@@ -85,6 +90,8 @@ f1 <- function (data, lev = NULL, model = NULL) {
   f1_val
 }
 
+# create k folds - not needed because borrowed from tidymodels 
+# myFolds <- createFolds(train$Attrition, k = 5)
 
 # Create reusable trainControl object: myControl
 myControl <- trainControl(
@@ -107,11 +114,12 @@ methods <- c("glmnet", "xgbTree")
 train_model <- function(x) {
   model <- caret::train(
                     Attrition ~ .,
-                    data = ibm_balanced,
+                    data = train,
                     metric = "F1",
                     method = x,
                     preProcess = c("scale", "nzv","corr"),
-                    trControl = myControl
+                    trControl = myControl,
+                    tuneLength = 4
                   )
   return(assign(paste0("model_", x),model, envir = .GlobalEnv))
 }
@@ -143,12 +151,12 @@ bwplot(resamples, metric = "F1")
 model_glm
 summary(model_glm)
 
-base_Pred <- predict.train(model_glm, ibm_reduced, type = "raw")
-confusionMatrix(base_Pred, ibm_reduced$Attrition, mode = "prec_recall") 
+base_Pred <- predict.train(model_glmnet, test, type = "raw")
+confusionMatrix(base_Pred, test$Attrition, mode = "prec_recall") 
 
-# assess winner model
-xgb_Pred <- predict.train(model_xgbTree, ibm_reduced, type = "raw")
-confusionMatrix(xgb_Pred, ibm_reduced$Attrition, mode = "prec_recall")
+# assess winner model on test data
+xgb_Pred <- predict.train(model_xgbTree, test, type = "raw")
+confusionMatrix(xgb_Pred, test$Attrition, mode = "prec_recall")
 
 
 #-------------------------------------------------------------------------------
