@@ -64,6 +64,12 @@ ibm_reduced <- ibm_147 %>%
                            "MonthlyRate","StandardHours","TotalWorkingYears","StockOptionLevel",
                            "Gender", "Over18", "OverTime", "median_compensation"))
 
+# make sure that factor levels of attrition are correctly ordered
+levels(ibm_reduced$Attrition)
+ibm_reduced$Attrition <- factor(ibm_reduced$Attrition, levels = c("Yes", "No"))
+# double check
+levels(ibm_reduced$Attrition)
+
 #-------------------------------------------------------------------------------
 # DATA PREPARATION
 #-------------------------------------------------------------------------------
@@ -71,8 +77,8 @@ ibm_reduced <- ibm_147 %>%
 library(rsample)
 library(tidymodels)
 
-#create 90/10 split
-ibm_split <- initial_split(ibm_reduced, prop = 9/10, strata = Attrition)
+# #create 90/10 split
+ibm_split <- initial_split(ibm_reduced, prop = 4/5, strata = Attrition)
 
 # Create the training data
 train <- ibm_split %>%
@@ -103,9 +109,8 @@ train_cv_caret <- rsample2caret(myFolds)
 
 library(themis)
 
-set.seed(9560)
 # create reusable recipe for all models
-ibm_rec_balanced <- train %>%
+ibm_rec <- train %>%
   recipe(Attrition ~ .) %>%
   # normalize all numeric predictors
   step_normalize(all_numeric()) %>%
@@ -114,9 +119,10 @@ ibm_rec_balanced <- train %>%
   # remove zero variance predictors
   step_nzv(all_predictors(), - all_outcomes()) %>%
   # remove highly correlated vars
-  step_corr(all_numeric(), threshold = 0.75) %>%
+  step_corr(all_numeric(), threshold = 0.75) 
+
   # deal with class imbalance
-  step_rose(Attrition)
+  # step_rose(Attrition)
 
 
 # create model-specific recipes
@@ -125,30 +131,55 @@ log_spec <-
   set_engine("glmnet") 
 
 xgb_spec <- 
-  boost_tree( trees = tune(), tree_depth = tune()) %>%
+  boost_tree(tree_depth = tune(),trees = tune(), learn_rate = tune(), 
+             loss_reduction = tune(), min_n = tune(), sample_size = tune()) %>%
   set_mode("classification")
 
 
+# create a custom grid and control object
+
+#len <- ncol(train)
+# glmnet_grid <- expand.grid(mixture = seq(0, 1, length = len),# alpha
+#                            penalty = c(0, 10 ^ seq(-1, -4, length = len - 1)))# lambda
+glmnet_grid <- grid_random(parameters(log_spec), size = 16)
+# xgbTree_grid <- expand.grid(tree_depth = seq(1, len), # max_depth
+#                             trees = floor((1:len) * 50), # n_rounds
+#                             learn_rate = c(.3, .4), # eta
+#                             loss_reduction = 0, # gamma
+#                             # mtry = runif(len, min = .3, max = .7), # colsample_bytree -> only specific engines
+#                             min_n = sample(0:20, size = len, replace = TRUE), # min_child_weight
+#                             sample_size = seq(.5, 1, length = len)) # subsample
+xgbTree_grid <- grid_random(parameters(xgb_spec), size = 256)
+
+grid_ctrl <-
+  control_grid(
+    save_pred = TRUE,
+    parallel_over = "everything",
+    save_workflow = TRUE,
+    # show progress
+    verbose = TRUE
+  )
 
 # create a workflow SET
 library(workflowsets)
-
 my_models <- 
   workflow_set(
-    preproc = list(ibm_rec_balanced),
+    preproc = list(ibm_rec),
     models = list(glmnet = log_spec,  xgbTree = xgb_spec),
     cross = TRUE
-  )
+  ) %>%
+  # add custom grid
+  option_add(grid = glmnet_grid, id = "recipe_glmnet") %>%
+  option_add(grid = xgbTree_grid, id = "recipe_xgbTree")
 my_models
 
 
 # actual training
 model_race <- 
   my_models %>% 
-  workflow_map("tune_grid", resamples = myFolds, initial = 5,verbose = TRUE,
+  workflow_map("tune_grid", resamples = myFolds, verbose = TRUE,
+               control = grid_ctrl,
                metrics = metric_set(bal_accuracy, yardstick::precision, yardstick::recall, f_meas))
-
-
 
 
 #-------------------------------------------------------------------------------
@@ -165,34 +196,45 @@ autoplot(model_race)
 # select best workflow for the model that worked well
 best_results <- 
   model_race %>% 
-  extract_workflow_set_result("recipe_glmnet") %>% 
+  extract_workflow_set_result("recipe_xgbTree") %>% 
   select_best(metric = "f_meas")
 best_results
 
 # show final metrics for the training set
-glmnet_test_results <- model_race %>% 
-                          extract_workflow("recipe_glmnet") %>% 
+xgbTree_wkfl <- model_race %>% 
+                          extract_workflow("recipe_xgbTree") %>% 
                           finalize_workflow(best_results) %>% 
-                          last_fit(split = ibm_split, metrics = metric_set(bal_accuracy, yardstick::precision, yardstick::recall, f_meas)) %>%
-                          collect_metrics()
-glmnet_test_results
+                          last_fit(split = ibm_split, metrics = f_meas) 
 
+xgbTree_test_results <- xgbTree_wkfl %>%
+                        collect_metrics()
+xgbTree_test_results
+
+# create confusion matrix
+conf_mat(xgbTree_wkfl$.predictions[[1]],
+         truth = Attrition,
+         estimate = .pred_class)
 
 #-------------------------------------------------------------------------------
-# TO DO's
+# PREDICTION ON ACTIVE EMPLOYEES
 #-------------------------------------------------------------------------------
 
-# train test split and model performance on test data for caret
-# make tuning grids comparable to each other (caret's default tuning parameters)
-# create confusion matrix for tidymodels
-# make predictions with the winning model to find employees at risk to leave soon
-# track times for model tuning with profvis
+# find employee IDs based on split object indices
+
+# save employee index to keep track
+ibm_reduced$ID <- ibm_147$EmployeeNumber 
+
+# subset on employees that have not left
+
+# make predictions on these employees (change test to no_churn)
+predict(xgbTree_wkfl, test, type = "prob") %>%
+  mutate(Pred_attr = ifelse(.pred_Yes > 0.5, "Yes", "No")) %>%
+  bind_cols(test %>% select(Attrition))
+
+# order by predicted probability to leave and show the first 5 suggestions
+
 
 # done:
 # ----
-# more a bit more data: 147 instead of 126
-# included minority sampling to deal with class imbalance
-# reduced model comparison to two competing models only
-# included furrrs multicore processing
-# finalized workflow 
-
+# made ROSE optional (a bit artificial and we want to make predictions with real data)
+# created custom grids with the similar to caret to ensure more comparability
