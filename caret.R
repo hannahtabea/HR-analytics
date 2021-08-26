@@ -6,8 +6,7 @@
 # use here package to set up the right paths while making it less hard-wired for other users
 library(here)
 current_date <- Sys.Date()
-path_dat <- here('WA_Fn-UseC_-HR-Employee-Attrition.csv')
-path_plot <- here('Plots')
+path_dat <- here('HR analytics','WA_Fn-UseC_-HR-Employee-Attrition.csv')
 
 # get data
 library(data.table)
@@ -61,13 +60,6 @@ ibm_reduced$Attrition <- factor(ibm_reduced$Attrition, levels = c("Yes", "No"))
 # double check
 levels(ibm_reduced$Attrition)
 
-## deal with class imbalance (optional)
-# library(ROSE)
-# set.seed(9560)
-# ibm_balanced <- ROSE(Attrition ~ ., data  = ibm_reduced)$data
-# # check if it worked
-# table(ibm_balanced$Attrition) 
-
 #-------------------------------------------------------------------------------
 # MODELLING PART 
 #-------------------------------------------------------------------------------
@@ -75,11 +67,20 @@ levels(ibm_reduced$Attrition)
 library(caret)
 
 # create data folds for cross validation
-trainIndex <- createDataPartition(ibm_reduced$Attrition, p = .8,
+trainIndex <- createDataPartition(ibm_reduced$Attrition, p = .7,
                                   list = FALSE,
                                   times = 1)
 train <- ibm_reduced[ trainIndex,]
 test  <- ibm_reduced[-trainIndex,]
+
+
+## deal with class imbalance - upsampling
+library(ROSE)
+set.seed(9560)
+train <- ROSE(Attrition ~ ., data  = train)$data %>% 
+  mutate(Attrition = factor(Attrition, levels = c("Yes", "No"))) # ROSE has reversed factor levels, therefore order them again...
+# check if it worked
+table(train$Attrition)
 
 
 f1 <- function (data, lev = NULL, model = NULL) {
@@ -90,8 +91,8 @@ f1 <- function (data, lev = NULL, model = NULL) {
   f1_val
 }
 
-# create k folds - not needed because borrowed from tidymodels 
-# myFolds <- createFolds(train$Attrition, k = 5)
+# create k folds - not needed if borrowed from tidymodels 
+myFolds <- createFolds(train$Attrition, k = 5)
 
 # Create reusable trainControl object: myControl
 myControl <- trainControl(
@@ -103,8 +104,9 @@ myControl <- trainControl(
   savePredictions = "final",
   returnResamp = "final",
   preProcOptions = list(cutoff = 0.75),
-  index = train_cv_caret$index,
-  indexOut = train_cv_caret$indexOut
+  index = myFolds,
+  # index = train_cv_caret$index, # use when split is borrowed from tidymodels
+  # indexOut = train_cv_caret$indexOut # see above
 )
 
 
@@ -147,30 +149,30 @@ bwplot(resamples, metric = "F1")
 # MODEL PERFORMANCE - CONFUSION MATRIX
 #-------------------------------------------------------------------------------
 
-# assess baseline model
-model_glm
-summary(model_glm)
-
-base_Pred <- predict.train(model_glmnet, test, type = "raw")
-confusionMatrix(base_Pred, test$Attrition, mode = "prec_recall") 
-
+# cross-validated training performance
 # assess winner model on test data
-xgb_Pred <- predict.train(model_xgbTree, test, type = "raw")
-confusionMatrix(xgb_Pred, test$Attrition, mode = "prec_recall")
+xgb_pred_train <- predict.train(model_xgbTree, train, type = "raw")
+bal_accuracy(train, truth = train$Attrition, estimate = xgb_pred_train)
+confusionMatrix(xgb_pred_train, train$Attrition, mode = "prec_recall")
+
+xgb_pred_test <- predict.train(model_xgbTree, test, type = "raw")
+bal_accuracy(test, truth = test$Attrition, estimate = xgb_pred_test)
+confusionMatrix(xgb_pred_test, test$Attrition, mode = "prec_recall")
 
 
 #-------------------------------------------------------------------------------
 # PREDICTION ON ACTIVE EMPLOYEES
 #-------------------------------------------------------------------------------
 
-# save employee index to keep track
-ibm_reduced$ID <- ibm_147$EmployeeNumber
+
 # save employees who did not churn
-no_churn <- subset(ibm_reduced,Attrition == "No")
+no_churn <- subset(ibm_147,Attrition == "No")
 # get class probabilities from employees who are still active
 probs <- predict.train(model_xgbTree, no_churn, type = "prob")
 # merge with employee data
-still_active <- data.table(no_churn,probs)
+still_active <- data.table(
+  subset(no_churn,select = c("EmployeeNumber","Attrition")),
+  probs)
 
 # show employees who are most at risk to leave soon
 head(still_active[order(-Yes)],5)
