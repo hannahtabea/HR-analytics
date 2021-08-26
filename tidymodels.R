@@ -6,8 +6,7 @@
 # use here package to set up the right paths 
 library(here)
 current_date <- Sys.Date()
-path_dat <- here('WA_Fn-UseC_-HR-Employee-Attrition.csv')
-path_plot <- here('Plots')
+path_dat <- here('HR analytics','WA_Fn-UseC_-HR-Employee-Attrition.csv')
 
 # get data
 library(readr)
@@ -78,7 +77,7 @@ library(rsample)
 library(tidymodels)
 
 # #create 90/10 split
-ibm_split <- initial_split(ibm_reduced, prop = 4/5, strata = Attrition)
+ibm_split <- initial_split(ibm_reduced, prop = 7/10, strata = Attrition)
 
 # Create the training data
 train <- ibm_split %>%
@@ -95,11 +94,19 @@ train %>%
     perc = n/nrow(.)
   )
 
+test %>%
+  group_by(Attrition) %>%
+  summarise(
+    n = n(),
+    perc = n/nrow(.)
+  )
+
 # create data folds for cross validation
 myFolds <- vfold_cv(train,
                     v = 5,
                     repeats = 5,
                     strata = Attrition)
+
 # save resampling for caret to make fair comparisons later
 train_cv_caret <- rsample2caret(myFolds)
 
@@ -119,36 +126,30 @@ ibm_rec <- train %>%
   # remove zero variance predictors
   step_nzv(all_predictors(), - all_outcomes()) %>%
   # remove highly correlated vars
-  step_corr(all_numeric(), threshold = 0.75) 
-
+  step_corr(all_numeric(), threshold = 0.75) %>%
   # deal with class imbalance
-  # step_rose(Attrition)
+  step_rose(Attrition)
 
 
 # create model-specific recipes
 log_spec <- 
-  logistic_reg(penalty = tune(), mixture = tune()) %>% 
+  logistic_reg(penalty = tune(), # lambda
+               mixture = tune()) # alpha
+               %>% 
   set_engine("glmnet") 
 
 xgb_spec <- 
-  boost_tree(tree_depth = tune(),trees = tune(), learn_rate = tune(), 
-             loss_reduction = tune(), min_n = tune(), sample_size = tune()) %>%
+  boost_tree(tree_depth = tune(), # max_depth
+             trees = tune(), # n_rounds 
+             learn_rate = tune(), # eta
+             loss_reduction = tune(), # gamma
+             min_n = tune(), # min_child_weight 
+             sample_size = tune()) %>% # subsample
   set_mode("classification")
 
 
 # create a custom grid and control object
-
-#len <- ncol(train)
-# glmnet_grid <- expand.grid(mixture = seq(0, 1, length = len),# alpha
-#                            penalty = c(0, 10 ^ seq(-1, -4, length = len - 1)))# lambda
 glmnet_grid <- grid_random(parameters(log_spec), size = 16)
-# xgbTree_grid <- expand.grid(tree_depth = seq(1, len), # max_depth
-#                             trees = floor((1:len) * 50), # n_rounds
-#                             learn_rate = c(.3, .4), # eta
-#                             loss_reduction = 0, # gamma
-#                             # mtry = runif(len, min = .3, max = .7), # colsample_bytree -> only specific engines
-#                             min_n = sample(0:20, size = len, replace = TRUE), # min_child_weight
-#                             sample_size = seq(.5, 1, length = len)) # subsample
 xgbTree_grid <- grid_random(parameters(xgb_spec), size = 256)
 
 grid_ctrl <-
@@ -175,8 +176,7 @@ my_models
 
 
 # actual training
-model_race <- 
-  my_models %>% 
+model_race <- my_models %>% 
   workflow_map("tune_grid", resamples = myFolds, verbose = TRUE,
                control = grid_ctrl,
                metrics = metric_set(bal_accuracy, yardstick::precision, yardstick::recall, f_meas))
@@ -193,48 +193,60 @@ model_race %>% collect_metrics() %>%
 # show performance
 autoplot(model_race)
 
-# select best workflow for the model that worked well
-best_results <- 
-  model_race %>% 
-  extract_workflow_set_result("recipe_xgbTree") %>% 
+# combine parameter combinations with metrics and predictions
+results <- model_race %>% 
+  extract_workflow_set_result("recipe_xgbTree")
+
+# select best workflow
+best_results <- results %>%
   select_best(metric = "f_meas")
-best_results
 
-# show final metrics for the training set
-xgbTree_wkfl <- model_race %>% 
-                          extract_workflow("recipe_xgbTree") %>% 
-                          finalize_workflow(best_results) %>% 
-                          last_fit(split = ibm_split, metrics = f_meas) 
 
+# finalize workflow
+xgbTree_wkfl <- model_race %>%
+  extract_workflow("recipe_xgbTree") %>%
+  finalize_workflow(best_results)
+
+# train on training data and test on test data
+xgbTree_final <- xgbTree_wkfl %>%
+  last_fit(split = ibm_split, metrics = metric_set(bal_accuracy, yardstick::precision, yardstick::recall, f_meas)) 
+
+# assess model performance across different folds of test data
 xgbTree_test_results <- xgbTree_wkfl %>%
-                        collect_metrics()
-xgbTree_test_results
+  fit_resamples(resamples = myFolds,
+                metrics = metric_set(bal_accuracy, yardstick::precision, yardstick::recall, f_meas))
 
 # create confusion matrix
-conf_mat(xgbTree_wkfl$.predictions[[1]],
+conf_mat(xgbTree_final$.predictions[[1]],
          truth = Attrition,
          estimate = .pred_class)
+
+# Cross-validated training performance - balanced accuracy
+percent(show_best(results, n = 1)$mean)
+
+# Test performance - balanced accuracy
+percent(xgbTree_final$.metrics[[1]]$.estimate[[1]])
+
 
 #-------------------------------------------------------------------------------
 # PREDICTION ON ACTIVE EMPLOYEES
 #-------------------------------------------------------------------------------
 
-# find employee IDs based on split object indices
+# create fit object based on finalized workflow 
+whole_fit <-  xgbTree_final$.workflow[[1]] %>%
+  fit(ibm_147)
 
-# save employee index to keep track
-ibm_reduced$ID <- ibm_147$EmployeeNumber 
+# set employee data without outcome
+employees <- ibm_147 %>%
+  dplyr::select(-Attrition)
 
-# subset on employees that have not left
-
-# make predictions on these employees (change test to no_churn)
-predict(xgbTree_wkfl, test, type = "prob") %>%
+# make predictions on these employees based on finalized model
+employee_pred <- predict(whole_fit, employees, type = "prob") %>%
   mutate(Pred_attr = ifelse(.pred_Yes > 0.5, "Yes", "No")) %>%
-  bind_cols(test %>% select(Attrition))
+  bind_cols(ibm_147 %>% select(Attrition, EmployeeNumber))
 
-# order by predicted probability to leave and show the first 5 suggestions
-
-
-# done:
-# ----
-# made ROSE optional (a bit artificial and we want to make predictions with real data)
-# created custom grids with the similar to caret to ensure more comparability
+# order by predicted probability to leave and show the first 5 suggestions on employees who have not left yet
+employee_pred %>% 
+  filter(Attrition == "Yes") %>% 
+  arrange(desc(.pred_Yes)) %>% 
+  head()
