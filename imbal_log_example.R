@@ -1,28 +1,29 @@
 # Data wrangling and load data
 url <- "https://raw.githubusercontent.com/hannahtabea/HR-analytics/8c7abc5ef610c1f7ecc4596cf0ce6f55a2ffccf1/WA_Fn-UseC_-HR-Employee-Attrition.csv"
 ibm_dat <- fread(url) %>%
-  mutate(Attrition = factor(Attrition))
+  # make sure that factor levels are correctly ordered to ensure correct performance metrics!!!
+  # the first level should be your level of interest (e.g., YES)
+  mutate(Attrition = factor(Attrition, levels = c("Yes", "No")))
 
 ibm_dat[ , `:=`(MedianCompensation = median(MonthlyIncome)),by = .(JobLevel) ]
 ibm_dat[ , `:=`(CompensationRatio = (MonthlyIncome/MedianCompensation)), by =. (JobLevel)]
 ibm_dat <- ibm_dat %>%
-  mutate(CompensationLevel =  case_when(
+  mutate(CompensationLevel =  as.factor(case_when(
     CompensationRatio > 0.75 & CompensationRatio <= 1.25 ~ "Average",
     CompensationRatio >= 0 & CompensationRatio <= 0.75 ~ "Below",
     CompensationRatio >1.25  ~ "Above",
-    TRUE ~ "Other"))
-ibm_dat$CompensationLevel <- as.factor(ibm_dat$CompensationLevel)
-ibm_dat$EmployeeCount <- NULL
-ibm_dat$StandardHours <- NULL
-ibm_dat$Over18 <- NULL
+    TRUE ~ "Other"))) %>% 
+  select(-c(EmployeeCount,StandardHours,Over18))
 
 library(rsample)
+set.seed(69)
 ibm_split <- initial_split(ibm_dat, strata = Attrition)
 
 # Create the training data
 train <- ibm_split %>%
   training()
 
+# Create the test data
 test <- ibm_split %>%
   testing()
 
@@ -47,33 +48,44 @@ ibm_rec_imbalance <- recipe(Attrition ~ ., data = train) %>%
   # remove highly correlated vars
   step_corr(all_numeric(), threshold = 0.75) 
 
-
+# set model
 ibm_log_mod <- logistic_reg() %>%
   set_engine("glm")
 
+# create workflow
 ibm_wflow_imbal <- workflow() %>%
   add_model(ibm_log_mod) %>%
   add_recipe(ibm_rec_imbalance)
 
+# fit model to training data 
 ibm_fit_imbal <- ibm_wflow_imbal %>%
   fit(data = train)
 
+# extract model fit from parsnip and tidy output
 ibm_imbal_res <- ibm_fit_imbal %>%
-  pull_workflow_fit() %>%
+  extract_fit_parsnip() %>%
   tidy()
 
+# make predictions on test data
 ibm_preds_imbal <- predict(ibm_fit_imbal, test, type = "prob") %>%
-  mutate(Pred_attr = ifelse(.pred_Yes > 0.5, "Yes", "No")) %>%
+  mutate(Pred_attr = factor(ifelse(.pred_Yes > 0.5, "Yes", "No"), levels = c("Yes", "No"))) %>%
   bind_cols(test %>% select(Attrition))
+ibm_preds_imbal
 
-ibm_preds_imbal$Pred_attr <- as.factor(ibm_preds_imbal$Pred_attr)
-
+# show roc curve
 ibm_preds_imbal %>% 
-  roc_curve(truth = Attrition, .pred_No) %>% 
+  roc_curve(truth = Attrition, .pred_Yes) %>% 
   autoplot()
 
-# set metrics 
-multi_met <- metric_set(accuracy, precision, recall, spec)
+# confusion matrix
+conf_mat(ibm_preds_imbal,
+         truth = Attrition,
+         estimate = Pred_attr)
 
+# set metrics 
+multi_met <- metric_set(accuracy, yardstick::precision, yardstick::recall, spec)
+
+# show metrics
 ibm_metrics_imbal <- ibm_preds_imbal %>% 
   multi_met(truth = Attrition, estimate = Pred_attr)
+ibm_metrics_imbal
