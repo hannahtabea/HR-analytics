@@ -7,13 +7,13 @@ ibm_dat <- fread(url) %>%
 
 ibm_dat[ , `:=`(MedianCompensation = median(MonthlyIncome)),by = .(JobLevel) ]
 ibm_dat[ , `:=`(CompensationRatio = (MonthlyIncome/MedianCompensation)), by =. (JobLevel)]
-ibm_dat <- ibm_dat %>%
-  mutate(CompensationLevel =  as.factor(case_when(
-    CompensationRatio > 0.75 & CompensationRatio <= 1.25 ~ "Average",
-    CompensationRatio >= 0 & CompensationRatio <= 0.75 ~ "Below",
-    CompensationRatio >1.25  ~ "Above",
-    TRUE ~ "Other"))) %>% 
-  select(-c(EmployeeCount,StandardHours,Over18))
+ibm_dat[ , `:=`(CompensationLevel = factor(fcase(
+  CompensationRatio %between% list(0.75,1.25), "Average",
+  CompensationRatio %between% list(0, 0.75), "Below",
+  CompensationRatio %between% list(1.25,2),  "Above"),
+  levels = c("Below","Average","Above"))),
+  by = .(JobLevel) ][, c("EmployeeCount","StandardHours","Over18") := NULL]
+
 
 library(rsample)
 set.seed(69)
