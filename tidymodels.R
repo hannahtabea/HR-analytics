@@ -47,27 +47,28 @@ turnover_rate <- ibm_dat %>%
                   mutate(rate = n / sum(n))
 turnover_rate
 
+# 
+# # sample small to medium-sized data
+# set.seed(123)
+# ibm_147 <- sample_n(ibm_dat,147,replace = F)
 
-# sample small to medium-sized data
-set.seed(123)
-ibm_147 <- sample_n(ibm_dat,147,replace = F)
+
+# make sure that factor levels of attrition are correctly ordered
+levels(ibm_dat$Attrition)
+ibm_dat$Attrition <- factor(ibm_dat$Attrition, levels = c("Yes", "No"))
+# double check
+levels(ibm_dat$Attrition)
 
 
 # look at data to find variables that probably do not have any predictive power
-colnames(ibm_147)
+colnames(ibm_dat)
 
 
 # clean up data
-ibm_reduced <- ibm_147 %>%
-               select(-c("DailyRate","EducationField", "EmployeeCount", "EmployeeNumber",
-                           "MonthlyRate","StandardHours","TotalWorkingYears","StockOptionLevel",
-                           "Gender", "Over18", "OverTime", "median_compensation"))
-
-# make sure that factor levels of attrition are correctly ordered
-levels(ibm_reduced$Attrition)
-ibm_reduced$Attrition <- factor(ibm_reduced$Attrition, levels = c("Yes", "No"))
-# double check
-levels(ibm_reduced$Attrition)
+ibm_reduced <- ibm_dat %>%
+  select(-c("DailyRate","EducationField", "EmployeeCount", 
+            "MonthlyRate","StandardHours","TotalWorkingYears","StockOptionLevel",
+            "Gender", "Over18", "OverTime", "median_compensation"))
 
 #-------------------------------------------------------------------------------
 # DATA PREPARATION
@@ -101,10 +102,8 @@ test %>%
     perc = n/nrow(.)
   )
 
-# create data folds for cross validation
-myFolds <- vfold_cv(train,
-                    v = 5,
-                    repeats = 5,
+# create data folds for cross validation - 10 folds
+myFolds <- vfold_cv(train, repeats = 3,
                     strata = Attrition)
 
 # save resampling for caret to make fair comparisons later
@@ -113,7 +112,8 @@ train_cv_caret <- rsample2caret(myFolds)
 #-------------------------------------------------------------------------------
 # FEATURE PREPROCESSING
 #-------------------------------------------------------------------------------
-
+#devtools::install_github("stevenpawley/recipeselectors")
+library(recipeselectors)
 library(themis)
 
 # create reusable recipe for all models
@@ -128,8 +128,18 @@ ibm_rec <- train %>%
   # remove highly correlated vars
   step_corr(all_numeric(), threshold = 0.75) %>%
   # deal with class imbalance
-  step_rose(Attrition)
+  step_rose(Attrition) %>%
+  # rfe
+  step_select_roc(all_predictors(), top_p = tune(),
+                  outcome = "Attrition")
 
+# Prepare for parallel processing
+all_cores <- parallel::detectCores(logical = TRUE)
+registerDoParallel(cores = all_cores)
+
+#-------------------------------------------------------------------------------
+# MODEL FITTING
+#-------------------------------------------------------------------------------
 
 # create model-specific recipes
 log_spec <- 
@@ -139,27 +149,47 @@ log_spec <-
   set_engine("glmnet") 
 
 xgb_spec <- 
-  boost_tree(tree_depth = tune(), # max_depth
-             trees = tune(), # n_rounds 
-             learn_rate = tune(), # eta
-             loss_reduction = tune(), # gamma
-             min_n = tune(), # min_child_weight 
-             sample_size = tune()) %>% # subsample
-  set_mode("classification")
+  parsnip::boost_tree(mtry = tune(), # colsample_bytree
+                      sample_size = tune(), # subsample
+                      tree_depth = tune(), # max_depth
+                      trees = 1000, # n_rounds 
+                      learn_rate = tune(), # eta
+                      loss_reduction = tune(), # gamma
+                      min_n = tune()) %>% # min_child_weight 
+  set_mode("classification")%>%
+  set_engine("xgboost")
 
 
-# create a custom grid and control object
-glmnet_grid <- grid_random(parameters(log_spec), size = 16)
-xgbTree_grid <- grid_random(parameters(xgb_spec), size = 256)
+# Grid search for hyperparameters for 
+glmnet_params <- 
+  dials::parameters(list(
+    lambda = penalty(), 
+    alpha = mixture()
+  ))
 
-grid_ctrl <-
-  control_grid(
-    save_pred = TRUE,
-    parallel_over = "everything",
-    save_workflow = TRUE,
-    # show progress
-    verbose = TRUE
+glmnet_grid <- 
+  dials::grid_max_entropy(
+    glmnet_params, 
+    size = 16 # like caret
   )
+
+# Grid search for hyperparameters for XGB
+xgb_params <- 
+  dials::parameters(list(
+    min_n(),
+    tree_depth(),
+    learn_rate(),
+    loss_reduction(),
+    sample_size = sample_prop(),
+    finalize(mtry(), train))
+  )
+
+xgbTree_grid <- 
+  dials::grid_max_entropy(
+    xgb_params, 
+    size = 256 # like caret
+  )
+
 
 # create a workflow SET
 library(workflowsets)
@@ -170,16 +200,19 @@ my_models <-
     cross = TRUE
   ) %>%
   # add custom grid
-  option_add(grid = glmnet_grid, id = "recipe_glmnet") %>%
-  option_add(grid = xgbTree_grid, id = "recipe_xgbTree")
+  option_add(grid = xgbTree_grid, id = "recipe_xgbTree") %>%
+  option_add(grid = glmnet_grid, id = "recipe_glmnet") 
+
 my_models
 
+# create custom metrics
+ibm_metrics <- metric_set(bal_accuracy, roc_auc, yardstick::sensitivity, yardstick::specificity, yardstick::precision, f_meas)
 
 # actual training
 model_race <- my_models %>% 
   workflow_map("tune_grid", resamples = myFolds, verbose = TRUE,
-               control = grid_ctrl,
-               metrics = metric_set(bal_accuracy, yardstick::precision, yardstick::recall, f_meas))
+               control = tune::control_grid(verbose = TRUE),
+               metrics = ibm_metrics)
 
 
 #-------------------------------------------------------------------------------
@@ -187,10 +220,10 @@ model_race <- my_models %>%
 #-------------------------------------------------------------------------------
 
 # show metrices for the models
-model_race %>% collect_metrics() %>%
+model_race %>% collect_metrics(metrics = ibm_metrics) %>%
   group_by(wflow_id)
 
-# show performance
+# show performance of competing models
 autoplot(model_race)
 
 # combine parameter combinations with metrics and predictions
@@ -207,46 +240,116 @@ xgbTree_wkfl <- model_race %>%
   extract_workflow("recipe_xgbTree") %>%
   finalize_workflow(best_results)
 
+# assess model performance across different folds of train data
+xgbTree_res_results <- xgbTree_wkfl %>%
+  fit_resamples(resamples = myFolds,
+                metrics = ibm_metrics)
+# get metrices
+collect_metrics(xgbTree_res_results)
+
 # train on training data and test on test data
 xgbTree_final <- xgbTree_wkfl %>%
-  last_fit(split = ibm_split, metrics = metric_set(bal_accuracy, yardstick::precision, yardstick::recall, f_meas)) 
+  last_fit(split = ibm_split, metrics = ibm_metrics) 
 
-# assess model performance across different folds of test data
-xgbTree_test_results <- xgbTree_wkfl %>%
-  fit_resamples(resamples = myFolds,
-                metrics = metric_set(bal_accuracy, yardstick::precision, yardstick::recall, f_meas))
-
-# create confusion matrix
+# create confusion matrix on test data
 conf_mat(xgbTree_final$.predictions[[1]],
          truth = Attrition,
          estimate = .pred_class)
 
-# Cross-validated training performance - balanced accuracy
-percent(show_best(results, n = 1)$mean)
+# Cross-validated training performance - ROC_AUC
+percent(show_best(results, n = 1, metric = "roc_auc")$mean)
 
-# Test performance - balanced accuracy
-percent(xgbTree_final$.metrics[[1]]$.estimate[[1]])
-
+# Test performance - ROC_AUC
+percent(xgbTree_final$.metrics[[1]]$.estimate[[6]])
 
 #-------------------------------------------------------------------------------
 # PREDICTION ON ACTIVE EMPLOYEES
 #-------------------------------------------------------------------------------
 
-# create fit object based on finalized workflow 
-whole_fit <-  xgbTree_final$.workflow[[1]] %>%
-  fit(ibm_147)
 
-# set employee data without outcome
-employees <- ibm_147 %>%
+# create fit object based on finalized workflow 
+employee_fit <-  xgbTree_final$.workflow[[1]] %>%
+  fit(train)
+
+# set employee test data without outcome
+employees <- test %>%
   dplyr::select(-Attrition)
 
 # make predictions on these employees based on finalized model
-employee_pred <- predict(whole_fit, employees, type = "prob") %>%
+employee_pred <- predict(employee_fit, employees, type = "prob") %>%
   mutate(Pred_attr = ifelse(.pred_Yes > 0.5, "Yes", "No")) %>%
-  bind_cols(ibm_147 %>% select(Attrition, EmployeeNumber))
+  bind_cols(test %>% select(Attrition, EmployeeNumber))
 
 # order by predicted probability to leave and show the first 5 suggestions on employees who have not left yet
 employee_pred %>% 
   filter(Attrition == "Yes") %>% 
   arrange(desc(.pred_Yes)) %>% 
   head()
+
+# plot predictions
+employee_pred %>%
+  ggplot() +
+  geom_density(aes(x = .pred_Yes, fill = Attrition), 
+               alpha = 0.5)+
+  geom_vline(xintercept = 0.5,linetype = "dashed")+
+  ggtitle("Predicted probability distributions vs. actual Attrition outcomes")+ 
+  theme_bw()
+
+# show roc curve
+employee_pred %>% 
+  roc_curve(truth = Attrition, .pred_Yes) %>% 
+  autoplot()
+
+
+#-------------------------------------------------------------------------------
+# BONUS: FEATURE IMPORTANCE - RFE
+#-------------------------------------------------------------------------------
+
+# basic model specification
+basic_spec <- boost_tree(mode = "classification") %>%
+  set_engine("xgboost")
+
+# create workflow
+basic_wfl <-  workflow() %>% 
+  add_recipe(ibm_rec) %>% 
+  add_model(basic_spec)
+
+# save parameter info
+p_info <- 
+  basic_wfl %>% 
+  parameters() %>% 
+  # top predictors should range between 1 and 30
+  update(top_p = top_p(c(1, 30)))
+
+ctrl <- control_grid(extract = identity)
+
+# save tuning results
+rfe_res <-
+  basic_spec %>% 
+  tune_grid(
+    ibm_rec,
+    resamples = myFolds,
+    grid = 20,
+    param_info = p_info,
+    control = ctrl
+  )
+
+# plot amount of top predictors against roc_auc
+rfe_res %>% 
+  collect_metrics() %>% 
+  filter(.metric == "roc_auc") %>% 
+  ggplot(aes(x = top_p, y = mean)) + 
+  geom_point() + 
+  geom_line() + 
+  theme_bw()
+
+
+# prepare data based on recipe (Again)
+prepped <- prep(ibm_rec)
+
+# fit again (pull_importances not applicable to resamples object)
+basic_fitted <- basic_spec %>%
+  fit(Attrition ~ ., juice(prepped))
+
+# Get importances
+pull_importances(basic_fitted)
