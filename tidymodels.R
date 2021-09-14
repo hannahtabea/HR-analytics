@@ -144,7 +144,8 @@ registerDoParallel(cores = all_cores)
 # create model-specific recipes
 log_spec <- 
   logistic_reg(penalty = tune(), # lambda
-               mixture = tune()) # alpha
+               mixture = tune(),
+               top_p = top_p(c(1, 30))) # alpha
                %>% 
   set_engine("glmnet") 
 
@@ -152,10 +153,11 @@ xgb_spec <-
   parsnip::boost_tree(mtry = tune(), # colsample_bytree
                       sample_size = tune(), # subsample
                       tree_depth = tune(), # max_depth
-                      trees = 1000, # n_rounds 
+                      trees = 2000, # n_rounds 
                       learn_rate = tune(), # eta
-                      loss_reduction = tune(), # gamma
-                      min_n = tune()) %>% # min_child_weight 
+                      loss_reduction = c(0), # gamma
+                      min_n = tune(),
+                      top_p = top_p(c(1, 30))) %>% # min_child_weight 
   set_mode("classification")%>%
   set_engine("xgboost")
 
@@ -163,8 +165,9 @@ xgb_spec <-
 # Grid search for hyperparameters for 
 glmnet_params <- 
   dials::parameters(list(
-    lambda = penalty(), 
-    alpha = mixture()
+    penalty(), 
+    mixture(),
+    top_p()
   ))
 
 glmnet_grid <- 
@@ -181,7 +184,8 @@ xgb_params <-
     learn_rate(),
     loss_reduction(),
     sample_size = sample_prop(),
-    finalize(mtry(), train))
+    finalize(mtry(), train),
+    top_p())
   )
 
 xgbTree_grid <- 
@@ -266,7 +270,6 @@ percent(xgbTree_final$.metrics[[1]]$.estimate[[6]])
 # PREDICTION ON ACTIVE EMPLOYEES
 #-------------------------------------------------------------------------------
 
-
 # create fit object based on finalized workflow 
 employee_fit <-  xgbTree_final$.workflow[[1]] %>%
   fit(train)
@@ -289,10 +292,10 @@ employee_pred %>%
 # plot predictions
 employee_pred %>%
   ggplot() +
-  geom_density(aes(x = .pred_Yes, fill = Attrition), 
+  geom_density(aes(x = .pred_Yes, fill = Attrition),
                alpha = 0.5)+
   geom_vline(xintercept = 0.5,linetype = "dashed")+
-  ggtitle("Predicted probability distributions vs. actual Attrition outcomes")+ 
+  ggtitle("Predicted probability distributions vs. actual Attrition outcomes")+
   theme_bw()
 
 # show roc curve
