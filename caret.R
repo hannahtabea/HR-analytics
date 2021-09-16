@@ -42,7 +42,7 @@ turnover_rate
 # ibm_147 <- ibm_dat[sample(.N, 147)]
  
 # look at data to find variables that probably do not have any predictive power
-colnames(ibm_147)
+colnames(ibm_dat)
 
 # clean up data
 ibm_reduced <- ibm_dat[,-c("DailyRate","EducationField", "EmployeeCount", 
@@ -71,10 +71,9 @@ test  <- ibm_reduced[-trainIndex,]
 
 ## deal with class imbalance - upsampling
 library(ROSE)
-library(dplyr)
 set.seed(9560)
 train <- ROSE(Attrition ~ ., data  = train)$data %>% 
-  mutate(Attrition = factor(Attrition, levels = c("Yes", "No"))) # ROSE has reversed factor levels, therefore order them again...
+train$Attrition <- factor(train$Attrition, levels = c("Yes", "No")) # ROSE has reversed factor levels, therefore order them again...
 # check if it worked
 table(train$Attrition)
 
@@ -156,6 +155,17 @@ confusionMatrix(xgb_pred_train, train$Attrition, mode = "prec_recall")
 xgb_pred_test <- predict.train(model_xgbTree, test, type = "raw")
 bal_accuracy(test, truth = test$Attrition, estimate = xgb_pred_test)
 confusionMatrix(xgb_pred_test, test$Attrition, mode = "prec_recall")
+
+# plot predictions
+employee_pred <-  predict.train(model_xgbTree, test, type = "prob")
+employee_pred['Attrition'] <- test$Attrition
+
+ggplot(employee_pred) +
+  geom_density(aes(x = Yes, fill = Attrition),
+               alpha = 0.5)+
+  geom_vline(xintercept = 0.5,linetype = "dashed")+
+  ggtitle("Predicted probability distributions vs. actual Attrition outcomes")+
+  theme_bw()
 
 #-------------------------------------------------------------------------------
 # PREDICTION ON ACTIVE EMPLOYEES
