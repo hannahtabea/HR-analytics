@@ -31,7 +31,7 @@ myCol <- rbind(brewer.pal(8, "Blues")[c(5,7,8)],
 
 # Correlation: The higher employee's job satisfaction,the lower the turnover rate.
 # Boxplot
-plot_jobsatisfaction <- ggplot(ibm_126, aes(x = Attrition, y = JobSatisfaction,fill = Attrition))+
+plot_jobsatisfaction <- ggplot(ibm_147, aes(x = Attrition, y = JobSatisfaction,fill = Attrition))+
   geom_boxplot(width=0.1)+
   scale_fill_manual(values = myCol)+
   ylab("Job Satisfaction")+
@@ -46,7 +46,7 @@ ggsave(plot_jobsatisfaction, file=paste0(current_date,"_","Distribution_Jobsatis
 # Hypothesis: Someone who is satisfied with the job tolerates a low to moderate income and stays
 
 # Monthly income vs. job satisfaction -> turnover?
-plot_income <- ggplot(ibm_126, aes(x = as.factor(JobSatisfaction), y = MonthlyIncome,fill = Attrition))+
+plot_income <- ggplot(ibm_147, aes(x = as.factor(JobSatisfaction), y = MonthlyIncome,fill = Attrition))+
   geom_boxplot()+
   scale_fill_manual(values = myCol)+
   ylab("Monthly Income")+
@@ -56,7 +56,7 @@ plot_income <- ggplot(ibm_126, aes(x = as.factor(JobSatisfaction), y = MonthlyIn
 ggsave(plot_income, file=paste0(current_date,"_","Interaction_Income.png"), path=path_plot,width = 20, height = 10, units = "cm")
 
 # Pay competetiveness vs. job satisfaction -> turnover?
-plot_CompRatio <- ggplot(ibm_126, aes(x = as.factor(JobSatisfaction), y = CompensationRatio,fill = Attrition))+
+plot_CompRatio <- ggplot(ibm_147, aes(x = as.factor(JobSatisfaction), y = CompensationRatio,fill = Attrition))+
   geom_boxplot()+
   scale_fill_manual(values = myCol)+
   ylab("Competensation Ratio")+
@@ -69,17 +69,17 @@ ggsave(plot_CompRatio, file=paste0(current_date,"_","Interaction_CompRatio.png")
 
 
 # check distribution 
-sanity_check <- ibm_126[, list(count = .N, rate = (.N/nrow(ibm_126))), by = JobSatisfaction]
+sanity_check <- ibm_147[, list(count = .N, rate = (.N/nrow(ibm_147))), by = JobSatisfaction]
 sanity_check
 
 
 # What about personal reasons?
-library(AppliedPredictiveModeling)
 transparentTheme(trans = .4)
 library(caret)
 
-featurePlot(x = ibm_126[, c(7,9,18,20)], 
-            y = as.factor(ibm_126$Attrition),
+featurePlot(x = ibm_147[, c("JobSatisfaction", "EnvironmentSatisfaction", 
+                            "RelationshipSatisfaction", "WorkLifeBalance")], 
+            y = as.factor(ibm_147$Attrition),
             plot = "density", 
             scales = list(x = list(relation="free"), 
                           y = list(relation="free")), 
@@ -92,7 +92,7 @@ featurePlot(x = ibm_126[, c(7,9,18,20)],
 library(vcd)
 library(vcdExtra)
 
-mosaic(~ Attrition + EnvironmentSatisfaction, data = ibm_126, shade = TRUE, legend = TRUE)
-mosaic(~ Attrition + JobInvolvement, data = ibm_126, shade = TRUE, legend = TRUE)
-mosaic(~ Attrition + WorkLifeBalance, data = ibm_126, shade = TRUE, legend = TRUE)
-mosaic(~ Attrition + RelationshipSatisfaction, data = ibm_126, shade = TRUE, legend = TRUE)
+mosaic(~ Attrition + EnvironmentSatisfaction, data = ibm_147, shade = TRUE, legend = TRUE)
+mosaic(~ Attrition + JobInvolvement, data = ibm_147, shade = TRUE, legend = TRUE)
+mosaic(~ Attrition + WorkLifeBalance, data = ibm_147, shade = TRUE, legend = TRUE)
+mosaic(~ Attrition + RelationshipSatisfaction, data = ibm_147, shade = TRUE, legend = TRUE)
