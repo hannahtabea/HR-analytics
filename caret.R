@@ -72,7 +72,7 @@ test  <- ibm_reduced[-trainIndex,]
 ## deal with class imbalance - upsampling
 library(ROSE)
 set.seed(9560)
-train <- ROSE(Attrition ~ ., data  = train)$data %>% 
+train <- ROSE(Attrition ~ ., data  = train)$data 
 train$Attrition <- factor(train$Attrition, levels = c("Yes", "No")) # ROSE has reversed factor levels, therefore order them again...
 # check if it worked
 table(train$Attrition)
