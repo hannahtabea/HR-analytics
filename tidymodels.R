@@ -74,7 +74,6 @@ ibm_reduced <- ibm_dat %>%
 # DATA PREPARATION
 #-------------------------------------------------------------------------------
 
-library(rsample)
 library(tidymodels)
 
 # #create 90/10 split
@@ -128,14 +127,15 @@ ibm_rec <- train %>%
   # remove highly correlated vars
   step_corr(all_numeric(), threshold = 0.75) %>%
   # deal with class imbalance
-  step_rose(Attrition) %>%
+  step_rose(Attrition) 
+#%>%
   # rfe
-  step_select_roc(all_predictors(), top_p = tune(),
-                  outcome = "Attrition")
+  # step_select_roc(all_predictors(), top_p = tune(),
+  #                 outcome = "Attrition")
 
 # Prepare for parallel processing
 all_cores <- parallel::detectCores(logical = TRUE)
-registerDoParallel(cores = all_cores)
+doParallel::registerDoParallel(cores = all_cores)
 
 #-------------------------------------------------------------------------------
 # MODEL FITTING
@@ -144,9 +144,7 @@ registerDoParallel(cores = all_cores)
 # create model-specific recipes
 log_spec <- 
   logistic_reg(penalty = tune(), # lambda
-               mixture = tune(),
-               top_p = top_p(c(1, 30))) # alpha
-               %>% 
+               mixture = tune()) %>% # alpha 
   set_engine("glmnet") 
 
 xgb_spec <- 
@@ -155,28 +153,21 @@ xgb_spec <-
                       tree_depth = tune(), # max_depth
                       trees = 2000, # n_rounds 
                       learn_rate = tune(), # eta
-                      loss_reduction = c(0), # gamma
-                      min_n = tune(),
-                      top_p = top_p(c(1, 30))) %>% # min_child_weight 
+                      loss_reduction = tune(), # gamma
+                      min_n = tune()) %>% # min_child_weight 
   set_mode("classification")%>%
   set_engine("xgboost")
 
 
-# Grid search for hyperparameters for 
+# Create params object for glmnet
 glmnet_params <- 
   dials::parameters(list(
     penalty(), 
-    mixture(),
-    top_p()
+    mixture()
   ))
 
-glmnet_grid <- 
-  dials::grid_max_entropy(
-    glmnet_params, 
-    size = 16 # like caret
-  )
 
-# Grid search for hyperparameters for XGB
+# Create params object for XGB
 xgb_params <- 
   dials::parameters(list(
     min_n(),
@@ -184,16 +175,17 @@ xgb_params <-
     learn_rate(),
     loss_reduction(),
     sample_size = sample_prop(),
-    finalize(mtry(), train),
-    top_p())
-  )
+    finalize(mtry(), train)
+  ))
 
-xgbTree_grid <- 
-  dials::grid_max_entropy(
-    xgb_params, 
-    size = 256 # like caret
-  )
 
+# Generate random grids
+glmnet_grid <- grid_random(glmnet_params, 
+                           size = 16 # like caret
+                           )
+xgbTree_grid <- grid_random(xgb_params, 
+                            size = 256 #like caret
+                            )
 
 # create a workflow SET
 library(workflowsets)
@@ -203,7 +195,7 @@ my_models <-
     models = list(glmnet = log_spec,  xgbTree = xgb_spec),
     cross = TRUE
   ) %>%
-  # add custom grid
+  # add custom grid 
   option_add(grid = xgbTree_grid, id = "recipe_xgbTree") %>%
   option_add(grid = glmnet_grid, id = "recipe_glmnet") 
 
