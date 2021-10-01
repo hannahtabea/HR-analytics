@@ -47,10 +47,6 @@ turnover_rate <- ibm_dat %>%
                   mutate(rate = n / sum(n))
 turnover_rate
 
-# 
-# # sample small to medium-sized data
-# set.seed(123)
-# ibm_147 <- sample_n(ibm_dat,147,replace = F)
 
 
 # make sure that factor levels of attrition are correctly ordered
@@ -127,11 +123,7 @@ ibm_rec <- train %>%
   # remove highly correlated vars
   step_corr(all_numeric(), threshold = 0.75) %>%
   # deal with class imbalance
-  step_rose(Attrition) 
-#%>%
-  # rfe
-  # step_select_roc(all_predictors(), top_p = tune(),
-  #                 outcome = "Attrition")
+  step_rose(Attrition)
 
 # Prepare for parallel processing
 all_cores <- parallel::detectCores(logical = TRUE)
@@ -154,7 +146,7 @@ xgb_spec <-
                       trees = 2000, # n_rounds 
                       learn_rate = tune(), # eta
                       loss_reduction = tune(), # gamma
-                      min_n = tune()) %>% # min_child_weight 
+                      min_n = tune()) %>% # min_child_weight
   set_mode("classification")%>%
   set_engine("xgboost")
 
@@ -179,11 +171,11 @@ xgb_params <-
   ))
 
 
-# Generate random grids
-glmnet_grid <- grid_random(glmnet_params, 
+# Generate irregular grids
+glmnet_grid <- grid_latin_hypercube(glmnet_params,
                            size = 16 # like caret
-                           )
-xgbTree_grid <- grid_random(xgb_params, 
+                            )
+xgbTree_grid <- grid_latin_hypercube(xgb_params, 
                             size = 256 #like caret
                             )
 
@@ -201,13 +193,15 @@ my_models <-
 
 my_models
 
+
 # create custom metrics
 ibm_metrics <- metric_set(bal_accuracy, roc_auc, yardstick::sensitivity, yardstick::specificity, yardstick::precision, f_meas)
 
 # actual training
 model_race <- my_models %>% 
+#  option_add(param_info = rfe_param) %>%
   workflow_map("tune_grid", resamples = myFolds, verbose = TRUE,
-               control = tune::control_grid(verbose = TRUE),
+               control = tune::control_grid(verbose = TRUE, extract = identity),
                metrics = ibm_metrics)
 
 
@@ -297,47 +291,12 @@ employee_pred %>%
 
 
 #-------------------------------------------------------------------------------
-# BONUS: FEATURE IMPORTANCE - RFE
+# BONUS: FEATURE IMPORTANCE 
 #-------------------------------------------------------------------------------
 
 # basic model specification
 basic_spec <- boost_tree(mode = "classification") %>%
   set_engine("xgboost")
-
-# create workflow
-basic_wfl <-  workflow() %>% 
-  add_recipe(ibm_rec) %>% 
-  add_model(basic_spec)
-
-# save parameter info
-p_info <- 
-  basic_wfl %>% 
-  parameters() %>% 
-  # top predictors should range between 1 and 30
-  update(top_p = top_p(c(1, 30)))
-
-ctrl <- control_grid(extract = identity)
-
-# save tuning results
-rfe_res <-
-  basic_spec %>% 
-  tune_grid(
-    ibm_rec,
-    resamples = myFolds,
-    grid = 20,
-    param_info = p_info,
-    control = ctrl
-  )
-
-# plot amount of top predictors against roc_auc
-rfe_res %>% 
-  collect_metrics() %>% 
-  filter(.metric == "roc_auc") %>% 
-  ggplot(aes(x = top_p, y = mean)) + 
-  geom_point() + 
-  geom_line() + 
-  theme_bw()
-
 
 # prepare data based on recipe (Again)
 prepped <- prep(ibm_rec)
