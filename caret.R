@@ -37,10 +37,6 @@ ibm_dat[ , `:=`(CompensationLevel = factor(fcase(
 turnover_rate <- ibm_dat[, list(count = .N, rate = (.N/nrow(ibm_dat))), by = Attrition]
 turnover_rate
 
-# # sample small to medium-sized data
-# set.seed(123)
-# ibm_147 <- ibm_dat[sample(.N, 147)]
- 
 # look at data to find variables that probably do not have any predictive power
 colnames(ibm_dat)
 
