@@ -73,16 +73,15 @@ train$Attrition <- factor(train$Attrition, levels = c("Yes", "No")) # ROSE has r
 # check if it worked
 table(train$Attrition)
 
-f1 <- function (data, lev = NULL, model = NULL) {
-  precision <- posPredValue(data$pred, data$obs, positive = "Yes")
-  recall  <- sensitivity(data$pred, data$obs, postive = "Yes")
-  f1_val <- (2 * precision * recall) / (precision + recall)
-  names(f1_val) <- c("F1")
-  f1_val
+f1 <- function(data, lev = NULL, model = NULL) {
+  f1_val <- MLmetrics::F1_Score(y_pred = data$pred,
+                                y_true = data$obs,
+                                positive = lev[1])
+  c(F1 = f1_val)
 }
 
 # create k folds - not needed if borrowed from tidymodels 
-myFolds <- createFolds(train$Attrition, k = 10)
+#myFolds <- createFolds(train$Attrition, k = 10)
 
 # Create reusable trainControl object
 myControl <- trainControl(
@@ -94,14 +93,14 @@ myControl <- trainControl(
   savePredictions = "final",
   returnResamp = "final",
   preProcOptions = list(cutoff = 0.75),
-  index = myFolds
-  # index = train_cv_caret$index, # use when split is borrowed from tidymodels
-  # indexOut = train_cv_caret$indexOut # see above
+  #index = myFolds
+  index = train_cv_caret$index, # use when split is borrowed from tidymodels
+  indexOut = train_cv_caret$indexOut # see above
 )
 
 # Create reusable train function
 methods <- c("glmnet", "xgbTree")
-
+system.time({
 train_model <- function(x) {
   model <- caret::train(
                     Attrition ~ .,
@@ -109,14 +108,13 @@ train_model <- function(x) {
                     metric = "F1",
                     method = x,
                     preProcess = c("scale", "nzv","corr"),
-                    trControl = myControl,
-                    tuneLength = 4
+                    trControl = myControl
                   )
   return(assign(paste0("model_", x),model, envir = .GlobalEnv))
 }
 
 lapply(methods, train_model)
-
+})
 #-------------------------------------------------------------------------------
 # MODEL COMPARISON
 #-------------------------------------------------------------------------------
@@ -140,27 +138,25 @@ evaluation <- evalm(model_list,gnames=c('glmnet','xgboost'))
 # MODEL PERFORMANCE - CONFUSION MATRIX & VISuALIZATION
 #-------------------------------------------------------------------------------
 # visualize tuning parameters against performance
-plot(model_xgbTree, type=c("g", "o"))
+plot(model_glmnet, type=c("g", "o"))
 
 # cross-validated training performance
 # assess winner model on test data
-xgb_pred_train <- predict.train(model_xgbTree, train, type = "raw")
-bal_accuracy(train, truth = train$Attrition, estimate = xgb_pred_train)
-confusionMatrix(xgb_pred_train, train$Attrition, mode = "prec_recall")
+glmnet_pred_train <- predict.train(model_glmnet, train, type = "raw")
+confusionMatrix(glmnet_pred_train, train$Attrition, mode = "prec_recall")
 
-xgb_pred_test <- predict.train(model_xgbTree, test, type = "raw")
-bal_accuracy(test, truth = test$Attrition, estimate = xgb_pred_test)
-confusionMatrix(xgb_pred_test, test$Attrition, mode = "prec_recall")
+glmnet_pred_test <- predict.train(model_glmnet, test, type = "raw")
+confusionMatrix(glmnet_pred_test, test$Attrition, mode = "prec_recall")
 
 # plot predictions
-employee_pred <-  predict.train(model_xgbTree, test, type = "prob")
+employee_pred <-  predict.train(model_glmnet, test, type = "prob")
 employee_pred['Attrition'] <- test$Attrition
 
 ggplot(employee_pred) +
   geom_density(aes(x = Yes, fill = Attrition),
                alpha = 0.5)+
   geom_vline(xintercept = 0.5,linetype = "dashed")+
-  ggtitle("Predicted probability distributions vs. actual Attrition outcomes")+
+  ggtitle("Predicted class probabilities coloured by attrition")+
   theme_bw()
 
 #-------------------------------------------------------------------------------
