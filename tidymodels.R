@@ -4,27 +4,22 @@
 #-------------------------------------------------------------------------------
 
 # use here package to set up the right paths 
-library(here)
 current_date <- Sys.Date()
-path_dat <- here('HR analytics','WA_Fn-UseC_-HR-Employee-Attrition.csv')
+path_dat <- here::here('HR analytics','WA_Fn-UseC_-HR-Employee-Attrition.csv')
 
 # get data
-library(readr)
-ibm_dat <- read_csv(path_dat)
+ibm_dat <- readr::read_csv(path_dat)
 
 # explore data
-library(skimr)
 str(ibm_dat)
-skim(ibm_dat)
+skimr::skim(ibm_dat)
 
-# speed up processing if possible
-library(furrr)
-plan(multicore) 
 #-------------------------------------------------------------------------------
 # DATA WRANGLING
 #-------------------------------------------------------------------------------
 
-library(tidyverse)
+library(tidymodels)
+
 ibm_dat <- ibm_dat %>% 
            # create CompensationRatio by joblevel
             group_by(JobLevel) %>%
@@ -70,9 +65,9 @@ ibm_reduced <- ibm_dat %>%
 # DATA PREPARATION
 #-------------------------------------------------------------------------------
 
-library(tidymodels)
 
 # #create 90/10 split
+set.seed(693)
 ibm_split <- initial_split(ibm_reduced, prop = 7/10, strata = Attrition)
 
 # Create the training data
@@ -107,9 +102,6 @@ train_cv_caret <- rsample2caret(myFolds)
 #-------------------------------------------------------------------------------
 # FEATURE PREPROCESSING
 #-------------------------------------------------------------------------------
-#devtools::install_github("stevenpawley/recipeselectors")
-library(recipeselectors)
-library(themis)
 
 # create reusable recipe for all models
 ibm_rec <- train %>%
@@ -123,7 +115,7 @@ ibm_rec <- train %>%
   # remove highly correlated vars
   step_corr(all_numeric(), threshold = 0.75) %>%
   # deal with class imbalance
-  step_rose(Attrition)
+  themis::step_rose(Attrition)
 
 # Prepare for parallel processing
 all_cores <- parallel::detectCores(logical = TRUE)
@@ -173,14 +165,15 @@ xgb_params <-
 
 # Generate irregular grids
 glmnet_grid <- grid_latin_hypercube(glmnet_params,
-                           size = 16 # like caret
+                           size = 9 # like caret
                             )
 xgbTree_grid <- grid_latin_hypercube(xgb_params, 
-                            size = 256 #like caret
+                            size = 108 #like caret
                             )
 
 # create a workflow SET
 library(workflowsets)
+
 my_models <- 
   workflow_set(
     preproc = list(ibm_rec),
@@ -197,13 +190,14 @@ my_models
 # create custom metrics
 ibm_metrics <- metric_set(bal_accuracy, roc_auc, yardstick::sensitivity, yardstick::specificity, yardstick::precision, f_meas)
 
+
+system.time ({
 # actual training
 model_race <- my_models %>% 
-#  option_add(param_info = rfe_param) %>%
   workflow_map("tune_grid", resamples = myFolds, verbose = TRUE,
-               control = tune::control_grid(verbose = TRUE, extract = identity),
+               control = tune::control_grid(verbose = TRUE),
                metrics = ibm_metrics)
-
+})
 
 #-------------------------------------------------------------------------------
 # MODEL COMPARISON
@@ -218,31 +212,41 @@ autoplot(model_race)
 
 # combine parameter combinations with metrics and predictions
 results <- model_race %>% 
-  extract_workflow_set_result("recipe_xgbTree")
+  extract_workflow_set_result("recipe_glmnet")
 
 # select best workflow
 best_results <- results %>%
   select_best(metric = "f_meas")
 
-
 # finalize workflow
-xgbTree_wkfl <- model_race %>%
-  extract_workflow("recipe_xgbTree") %>%
+glmnet_wkfl <- model_race %>%
+  extract_workflow("recipe_glmnet") %>%
   finalize_workflow(best_results)
 
 # assess model performance across different folds of train data
-xgbTree_res_results <- xgbTree_wkfl %>%
+glmnet_res_results <- glmnet_wkfl %>%
   fit_resamples(resamples = myFolds,
                 metrics = ibm_metrics)
-# get metrices
-collect_metrics(xgbTree_res_results)
+
+# get metrices of training folds
+collect_metrics(glmnet_res_results)
 
 # train on training data and test on test data
-xgbTree_final <- xgbTree_wkfl %>%
+glmnet_final <- glmnet_wkfl %>%
   last_fit(split = ibm_split, metrics = ibm_metrics) 
 
+# create fit object on training data
+glmnet_fit <- fit(glmnet_wkfl, train)
+# predict
+glmnet_train_pred <- predict(glmnet_fit, train) %>%
+                      bind_cols(train[2]) 
+# create confusion matrix on train data
+conf_mat(glmnet_train_pred,
+          truth = Attrition,
+          estimate = .pred_class)
+
 # create confusion matrix on test data
-conf_mat(xgbTree_final$.predictions[[1]],
+conf_mat(glmnet_final$.predictions[[1]],
          truth = Attrition,
          estimate = .pred_class)
 
@@ -250,42 +254,19 @@ conf_mat(xgbTree_final$.predictions[[1]],
 percent(show_best(results, n = 1, metric = "roc_auc")$mean)
 
 # Test performance - ROC_AUC
-percent(xgbTree_final$.metrics[[1]]$.estimate[[6]])
-
-#-------------------------------------------------------------------------------
-# PREDICTION ON ACTIVE EMPLOYEES
-#-------------------------------------------------------------------------------
-
-# create fit object based on finalized workflow 
-employee_fit <-  xgbTree_final$.workflow[[1]] %>%
-  fit(train)
-
-# set employee test data without outcome
-employees <- test %>%
-  dplyr::select(-Attrition)
-
-# make predictions on these employees based on finalized model
-employee_pred <- predict(employee_fit, employees, type = "prob") %>%
-  mutate(Pred_attr = ifelse(.pred_Yes > 0.5, "Yes", "No")) %>%
-  bind_cols(test %>% select(Attrition, EmployeeNumber))
-
-# order by predicted probability to leave and show the first 5 suggestions on employees who have not left yet
-employee_pred %>% 
-  filter(Attrition == "Yes") %>% 
-  arrange(desc(.pred_Yes)) %>% 
-  head()
+percent(glmnet_final$.metrics[[1]]$.estimate[[6]])
 
 # plot predictions
-employee_pred %>%
+data.frame(glmnet_final$.predictions) %>%
   ggplot() +
   geom_density(aes(x = .pred_Yes, fill = Attrition),
                alpha = 0.5)+
   geom_vline(xintercept = 0.5,linetype = "dashed")+
-  ggtitle("Predicted probability distributions vs. actual Attrition outcomes")+
+  ggtitle("Predicted class probabilities coloured by attrition")+
   theme_bw()
 
 # show roc curve
-employee_pred %>% 
+data.frame(glmnet_final$.predictions) %>% 
   roc_curve(truth = Attrition, .pred_Yes) %>% 
   autoplot()
 
