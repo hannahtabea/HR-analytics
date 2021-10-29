@@ -4,18 +4,15 @@
 #-------------------------------------------------------------------------------
 
 # use here package to set up the right paths while making it less hard-wired for other users
-library(here)
-current_date <- Sys.Date()
-path_dat <- here('HR analytics','WA_Fn-UseC_-HR-Employee-Attrition.csv')
+path_dat <- here::here('HR analytics','WA_Fn-UseC_-HR-Employee-Attrition.csv')
 
 # get data
 library(data.table)
 ibm_dat <- fread(path_dat, stringsAsFactors = T)
 
 # explore data
-library(skimr)
 str(ibm_dat)
-skim(ibm_dat)
+skimr::skim(ibm_dat)
 
 # speed up processing if possible
 plan(multicore) 
@@ -46,12 +43,6 @@ ibm_reduced <- ibm_dat[,-c("DailyRate","EducationField", "EmployeeCount",
                            "Gender", "Over18", "OverTime", "median_compensation")]
 
 
-# make sure that factor levels of attrition are correctly ordered
-levels(ibm_reduced$Attrition)
-ibm_reduced$Attrition <- factor(ibm_reduced$Attrition, levels = c("Yes", "No"))
-# double check
-levels(ibm_reduced$Attrition)
-
 #-------------------------------------------------------------------------------
 # MODELLING PART 
 #-------------------------------------------------------------------------------
@@ -65,10 +56,9 @@ trainIndex <- createDataPartition(ibm_reduced$Attrition, p = .7,
 train <- ibm_reduced[ trainIndex,]
 test  <- ibm_reduced[-trainIndex,]
 
-## deal with class imbalance - upsampling
-library(ROSE)
+# deal with class imbalance - upsampling
 set.seed(9560)
-train <- ROSE(Attrition ~ ., data  = train)$data 
+train <- ROSE::ROSE(Attrition ~ ., data  = train)$data 
 train$Attrition <- factor(train$Attrition, levels = c("Yes", "No")) # ROSE has reversed factor levels, therefore order them again...
 # check if it worked
 table(train$Attrition)
@@ -115,6 +105,7 @@ train_model <- function(x) {
 
 lapply(methods, train_model)
 })
+
 #-------------------------------------------------------------------------------
 # MODEL COMPARISON
 #-------------------------------------------------------------------------------
@@ -132,21 +123,24 @@ bwplot(resamples, metric = "F1")
 # get ROC results
 #install.packages("MLeval")
 library(MLeval)
-evaluation <- evalm(model_list,gnames=c('glmnet','xgboost'))
+evaluation_res <- evalm(model_list,gnames=c('glmnet','xgboost')) # roc curve on the training set
 
 #-------------------------------------------------------------------------------
-# MODEL PERFORMANCE - CONFUSION MATRIX & VISuALIZATION
+# CONFUSION MATRIX
 #-------------------------------------------------------------------------------
 # visualize tuning parameters against performance
 plot(model_glmnet, type=c("g", "o"))
 
 # cross-validated training performance
-# assess winner model on test data
 glmnet_pred_train <- predict.train(model_glmnet, train, type = "raw")
 confusionMatrix(glmnet_pred_train, train$Attrition, mode = "prec_recall")
 
 glmnet_pred_test <- predict.train(model_glmnet, test, type = "raw")
 confusionMatrix(glmnet_pred_test, test$Attrition, mode = "prec_recall")
+
+#-------------------------------------------------------------------------------
+# PERFORMANCE VISUALIZATIONS
+#-------------------------------------------------------------------------------
 
 # plot predictions
 employee_pred <-  predict.train(model_glmnet, test, type = "prob")
@@ -159,8 +153,10 @@ ggplot(employee_pred) +
   ggtitle("Predicted class probabilities coloured by attrition")+
   theme_bw()
 
+evaluation_final <- MLeval::evalm(employee_pred,gnames = c("glmnet"))
+
 #-------------------------------------------------------------------------------
-# PREDICTION ON ACTIVE EMPLOYEES
+# BONUS: PREDICTION ON ACTIVE EMPLOYEES
 #-------------------------------------------------------------------------------
 
 # save employees who did not churn

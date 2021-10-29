@@ -66,7 +66,7 @@ ibm_reduced <- ibm_dat %>%
 #-------------------------------------------------------------------------------
 
 
-# #create 90/10 split
+# create 90/10 split
 set.seed(693)
 ibm_split <- initial_split(ibm_reduced, prop = 7/10, strata = Attrition)
 
@@ -142,14 +142,12 @@ xgb_spec <-
   set_mode("classification")%>%
   set_engine("xgboost")
 
-
 # Create params object for glmnet
 glmnet_params <- 
   dials::parameters(list(
     penalty(), 
     mixture()
   ))
-
 
 # Create params object for XGB
 xgb_params <- 
@@ -161,7 +159,6 @@ xgb_params <-
     sample_size = sample_prop(),
     finalize(mtry(), train)
   ))
-
 
 # Generate irregular grids
 glmnet_grid <- grid_latin_hypercube(glmnet_params,
@@ -191,13 +188,13 @@ my_models
 ibm_metrics <- metric_set(bal_accuracy, roc_auc, yardstick::sensitivity, yardstick::specificity, yardstick::precision, f_meas)
 
 
-system.time ({
-# actual training
+#system.time ({
+# actual tuning
 model_race <- my_models %>% 
   workflow_map("tune_grid", resamples = myFolds, verbose = TRUE,
                control = tune::control_grid(verbose = TRUE),
                metrics = ibm_metrics)
-})
+#})
 
 #-------------------------------------------------------------------------------
 # MODEL COMPARISON
@@ -209,6 +206,10 @@ model_race %>% collect_metrics(metrics = ibm_metrics) %>%
 
 # show performance of competing models
 autoplot(model_race)
+
+#-------------------------------------------------------------------------------
+# MODEL FINALIZATION
+#-------------------------------------------------------------------------------
 
 # combine parameter combinations with metrics and predictions
 results <- model_race %>% 
@@ -226,7 +227,8 @@ glmnet_wkfl <- model_race %>%
 # assess model performance across different folds of train data
 glmnet_res_results <- glmnet_wkfl %>%
   fit_resamples(resamples = myFolds,
-                metrics = ibm_metrics)
+                metrics = ibm_metrics,
+                control = control_resamples(save_pred = TRUE))
 
 # get metrices of training folds
 collect_metrics(glmnet_res_results)
@@ -234,6 +236,14 @@ collect_metrics(glmnet_res_results)
 # train on training data and test on test data
 glmnet_final <- glmnet_wkfl %>%
   last_fit(split = ibm_split, metrics = ibm_metrics) 
+
+
+#-------------------------------------------------------------------------------
+# PREDICTIONS & CONFUSION MATRIX
+#-------------------------------------------------------------------------------
+
+# get performance metrics on test data in last_fit object
+glmnet_final$.metrics
 
 # create fit object on training data
 glmnet_fit <- fit(glmnet_wkfl, train)
@@ -250,11 +260,9 @@ conf_mat(glmnet_final$.predictions[[1]],
          truth = Attrition,
          estimate = .pred_class)
 
-# Cross-validated training performance - ROC_AUC
-percent(show_best(results, n = 1, metric = "roc_auc")$mean)
-
-# Test performance - ROC_AUC
-percent(glmnet_final$.metrics[[1]]$.estimate[[6]])
+#-------------------------------------------------------------------------------
+# PERFORMANCE VISUALIZATIONS
+#-------------------------------------------------------------------------------
 
 # plot predictions
 data.frame(glmnet_final$.predictions) %>%
@@ -265,11 +273,11 @@ data.frame(glmnet_final$.predictions) %>%
   ggtitle("Predicted class probabilities coloured by attrition")+
   theme_bw()
 
+
 # show roc curve
 data.frame(glmnet_final$.predictions) %>% 
   roc_curve(truth = Attrition, .pred_Yes) %>% 
   autoplot()
-
 
 #-------------------------------------------------------------------------------
 # BONUS: FEATURE IMPORTANCE 
